@@ -1,0 +1,97 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build JARVIS Android Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inspect Repository Structure & Check Files
+        run: |
+          echo "=== Current Runner Directory ==="
+          pwd
+          echo "=== Root Files in Repository ==="
+          ls -la
+          echo "=== Searching for Android & Gradle Files ==="
+          find . -maxdepth 4 -name "settings.gradle*" -o -name "build.gradle*" -o -name "gradlew" -o -name "gradle-wrapper.properties" || true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare Android Project & Gradle Wrapper
+        run: |
+          # ऑटो-डिटेक्ट: यदि प्रोजेक्ट रूट पर न होकर किसी सब-फ़ोल्डर में हो
+          GRADLE_DIR="."
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            FOUND_SETTINGS=$(find . -maxdepth 3 -name "settings.gradle*" | head -n 1)
+            if [ -n "$FOUND_SETTINGS" ]; then
+              GRADLE_DIR=$(dirname "$FOUND_SETTINGS")
+              echo "Detected Gradle project in subdirectory: $GRADLE_DIR"
+            fi
+          fi
+          echo "PROJECT_DIR=$GRADLE_DIR" >> $GITHUB_ENV
+          
+          # Secrets Gradle Plugin एरर से बचने के लिए
+          touch "$GRADLE_DIR/.env"
+          
+          # gradlew को एक्ज़ीक्यूटेबल बनाएँ
+          if [ -f "$GRADLE_DIR/gradlew" ]; then
+            chmod +x "$GRADLE_DIR/gradlew"
+          else
+            echo "::error::gradlew was not found in $GRADLE_DIR! Please ensure gradlew and gradle/ directory are committed to GitHub."
+            exit 1
+          fi
+
+      - name: Build Debug APK with Gradle
+        run: |
+          cd "$PROJECT_DIR"
+          echo "Building APK using ./gradlew assembleDebug in $PWD..."
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK Output
+        run: |
+          echo "=== Checking for generated APK files ==="
+          find . -name "*.apk" -ls
+          
+          APK_PATH="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "$APK_PATH" ]; then
+            echo "Success: app-debug.apk exists at $APK_PATH"
+            ls -lh "$APK_PATH"
+          else
+            ANY_APK=$(find . -name "*debug*.apk" | head -n 1)
+            if [ -n "$ANY_APK" ]; then
+              echo "Found debug APK at $ANY_APK"
+              mkdir -p "$PROJECT_DIR/app/build/outputs/apk/debug"
+              cp "$ANY_APK" "$APK_PATH"
+              ls -lh "$APK_PATH"
+            else
+              echo "::error::No APK file was found after Gradle build!"
+              exit 1
+            fi
+          fi
+
+      - name: Upload JARVIS APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-smart-assistant-debug-apk
+          path: "**/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
+          retention-days: 14
